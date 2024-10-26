@@ -125,7 +125,7 @@ class coupling_block(Function):
         return dx, None, None, None
 
 
-class CouplingBlock(nn.Module):
+class InvertibleBlock(nn.Module):
     """
     F 랑 G 는 임의의 모듈
     F랑 G를 coupling 구조에 끼워넣음. 
@@ -133,7 +133,8 @@ class CouplingBlock(nn.Module):
     Y_1 = X_1 + F(X_2)
     Y_2 = X_2 + G(Y_1)
     """
-    def __init__(self, F: nn.Module, G: nn.Module):
+    def __init__(self, F: nn.Module, G: nn.Module, compute_inverse=True):
+        ## compute_inverse 에 따라서 invertible 또는 vanilla 로 동작하도록 구혆필요
         super().__init__()
         self.F = F
         self.G = G
@@ -142,24 +143,14 @@ class CouplingBlock(nn.Module):
         output, ctx = coupling_block.apply(x, self.F, self.G, prev_ctx)
         ## prev_ctx 에 output 넣어주는걸 여기로 옮겨도 괜찮을듯
         ## ctx 가 autograd 인터페이스 밖으로 나오는게 좋지않음.. 메모리 free 안될수도 있음.
+        ## 잘하면 output 에 backward hook 을 이용해서 ctx 를 숨길수도 있을듯 한데..
+        ## 아님 외부에 context manager 를 둬서 거기다가 ctx 를 숨기는 방법도 있을듯
+        ## with invertible_forward(enabled=True): 이런식으로
+        ## 근데 그럼 다음 레이어가 invertible 한지를 알아야함 (input 을 되돌려줄수있는지)
         return output, ctx
 
 
-class CouplingBlockRef(nn.Module):
-    def __init__(self, F: nn.Module, G: nn.Module):
-        super().__init__()
-        self.F = F
-        self.G = G
-
-    def forward(self, x):
-        X_1, X_2 = torch.chunk(x, 2, dim=-1)
-        Y_1 = X_1 + self.F(X_2)
-        Y_2 = X_2 + self.G(Y_1)
-        output = torch.cat([Y_1, Y_2], dim=-1)
-        return output
-
-
-class InvertibleTransformerBlock(CouplingBlock):
+class InvertibleTransformerBlock(InvertibleBlock):
     def __init__(self, dim, num_heads):
         super().__init__(
             AttentionSubBlock(dim=dim, num_heads=num_heads),
@@ -362,8 +353,8 @@ def test():
     G1.zero_grad()
     F2.zero_grad()
     G2.zero_grad()
-    block1 = CouplingBlock(F1, G1)
-    block2 = CouplingBlock(F2, G2)
+    block1 = InvertibleBlock(F1, G1)
+    block2 = InvertibleBlock(F2, G2)
     output1, ctx = block1(input, None)
     output2, ctx = block2(output1, ctx)
     ctx.output = output2.detach()
