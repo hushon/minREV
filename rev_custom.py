@@ -314,6 +314,7 @@ class CouplingBlock(nn.Module):
     def forward(self, x, prev_ctx=None):
         output, ctx = coupling_block.apply(x, self.F, self.G, prev_ctx)
         ## prev_ctx 에 output 넣어주는걸 여기로 옮겨도 괜찮을듯
+        ## ctx 가 autograd 인터페이스 밖으로 나오는게 좋지않음.. 메모리 free 안될수도 있음.
         return output, ctx
 
 
