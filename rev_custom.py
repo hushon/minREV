@@ -690,6 +690,32 @@ def test():
     breakpoint()
 
 
+
+def test2():
+    input = torch.rand(1, 3, 32, 32, requires_grad=True) ## TODO: 왜 requires_grad=True 가 필요한지 모르겠다
+    model = InvertibleVisionTransformer()
+    model.zero_grad()
+    output = model(input)
+    loss = output.norm()
+    loss.backward()
+    breakpoint()
+
+    state_dict = model.state_dict()
+
+
+    input.grad.zero_()
+    model = RevViT()
+    model.load_state_dict(state_dict)
+    model.zero_grad()
+    output = model(input)
+    loss = output.norm()
+    # computatin gradients with reversible backward logic
+    # using retain_graph=True to keep the computation graph.
+    loss.backward(retain_graph=True)
+    breakpoint()
+
+
 if __name__ == "__main__":
     # main()
-    test()
+    # test()
+    test2()
