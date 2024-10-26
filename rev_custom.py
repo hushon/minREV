@@ -305,6 +305,8 @@ class CouplingBlock(nn.Module):
     F 랑 G 는 임의의 모듈
     F랑 G를 coupling 구조에 끼워넣음. 
     backward pass 할때는 뒷쪽 블락에서 보내준 activation 값을 이용해 중간값 재계산
+    Y_1 = X_1 + F(X_2)
+    Y_2 = X_2 + G(Y_1)
     """
     def __init__(self, F: nn.Module, G: nn.Module):
         super().__init__()
