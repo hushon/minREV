@@ -398,13 +398,7 @@ class InvertibleVisionTransformer(nn.Module):
         # concatenated along the last dimension to pass into the reversible blocks
         x = torch.cat([x, x], dim=-1)
 
-        # no need for custom backprop in eval/inference phase
-        if not self.training or self.no_custom_backward:
-            executing_fn = RevViT.vanilla_backward
-        else:
-            executing_fn = RevBackProp.apply
-
-        # This takes care of switching between vanilla backprop and rev backprop
+        ctx = None
         for layer in self.layers:
             x, ctx = layer(x, ctx)
         ctx.output = x.detach()
