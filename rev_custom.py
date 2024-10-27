@@ -11,7 +11,7 @@ from typing import Callable, Tuple, Any
 
 
 
-class coupling_block(Function):
+class InvertibleCouplingLayer(Function):
 
     """
     Custom Backpropagation function to allow (A) flusing memory in foward
@@ -49,10 +49,11 @@ class coupling_block(Function):
         
         ctx.F = F
         ctx.G = G
-        ctx.prev_ctx = x.ctx if hasattr(x, "ctx") else None # 이전 레이어한테 input 복원한거 보내줘야하므로 필요
+        if hasattr(x, "ctx"):
+            ctx.prev_ctx = x.ctx # 이전 레이어한테 input 복원한거 보내줘야하므로 필요
 
         output = torch.cat([Y_1, Y_2], dim=-1)
-        output.ctx = ctx
+        output.ctx = ctx  ## 이러면 forward 할때 output이 free 될수 있나?
 
         return output
 
@@ -118,7 +119,7 @@ class coupling_block(Function):
         dx = torch.cat([dX_1, dX_2], dim=-1)
 
         ## 여기서 다음 backward pass 에 X_1, X_2 를 전달해줘야함
-        if ctx.prev_ctx is not None:
+        if hasattr(ctx, "prev_ctx"):
             X_1 = Y_1 - f_X_2
             x = torch.cat([X_1, X_2], dim=-1)
             ctx.prev_ctx.output = x.detach()
@@ -126,7 +127,7 @@ class coupling_block(Function):
         return dx, None, None, None
 
 
-class InvertibleBlock(nn.Module):
+class CouplingBlock(nn.Module):
     """
     F 랑 G 는 임의의 모듈
     F랑 G를 coupling 구조에 끼워넣음. 
@@ -134,32 +135,29 @@ class InvertibleBlock(nn.Module):
     Y_1 = X_1 + F(X_2)
     Y_2 = X_2 + G(Y_1)
     """
-    def __init__(self, F: nn.Module, G: nn.Module, compute_inverse=True):
-        ## compute_inverse 에 따라서 invertible 또는 vanilla 로 동작하도록 구혆필요
+    def __init__(self, F: nn.Module, G: nn.Module, use_invertible=True):
         super().__init__()
         self.F = F
         self.G = G
-        self.compute_inverse = compute_inverse
+        self.use_invertible = use_invertible
 
     def forward(self, x):
-        if self.compute_inverse:
-            output = coupling_block.apply(x, self.F, self.G)
+        if self.use_invertible:
+            return InvertibleCouplingLayer.apply(x, self.F, self.G)
             ## prev_ctx 에 output 넣어주는걸 여기로 옮겨도 괜찮을듯
             ## ctx 가 autograd 인터페이스 밖으로 나오는게 좋지않음.. 메모리 free 안될수도 있음.
             ## 잘하면 output 에 backward hook 을 이용해서 ctx 를 숨길수도 있을듯 한데..
             ## 아님 외부에 context manager 를 둬서 거기다가 ctx 를 숨기는 방법도 있을듯
             ## with invertible_forward(enabled=True): 이런식으로
             ## 근데 그럼 다음 레이어가 invertible 한지를 알아야함 (input 을 되돌려줄수있는지)
-            return output
         else:
             X_1, X_2 = torch.chunk(x, 2, dim=-1)
             Y_1 = X_1 + self.F(X_2)
             Y_2 = X_2 + self.G(Y_1)
-            output = torch.cat([Y_1, Y_2], dim=-1), None
-            return output, None
+            return torch.cat([Y_1, Y_2], dim=-1)
 
 
-class InvertibleTransformerBlock(InvertibleBlock):
+class InvertibleTransformerBlock(CouplingBlock):
     def __init__(self, dim, num_heads):
         super().__init__(
             AttentionSubBlock(dim=dim, num_heads=num_heads),
@@ -225,7 +223,9 @@ class InvertibleVisionTransformer(nn.Module):
 
         for layer in self.layers:
             x = layer(x)
-        x.ctx.output = x.detach()
+
+        if hasattr(x, "ctx"):
+            x.ctx.output = x.detach().clone()
 
         # aggregate across sequence length
         x = x.mean(1)
@@ -361,8 +361,8 @@ def test():
     G1.zero_grad()
     F2.zero_grad()
     G2.zero_grad()
-    block1 = InvertibleBlock(F1, G1)
-    block2 = InvertibleBlock(F2, G2)
+    block1 = CouplingBlock(F1, G1)
+    block2 = CouplingBlock(F2, G2)
     output1, ctx = block1(input, None)
     output2, ctx = block2(output1, ctx)
     ctx.output = output2.detach()
