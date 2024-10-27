@@ -4,9 +4,6 @@ from torch import nn
 # Needed to implement custom backward pass
 from torch.autograd import Function as Function
 
-# We use the standard pytorch multi-head attention module
-from torch.nn import MultiheadAttention as MHA
-
 from typing import Callable, Tuple, Any
 
 
@@ -65,7 +62,7 @@ class InvertibleCouplingLayer(Function):
         Each layer implements its own logic for backward pass (both
         activation recomputation and grad calculation).
         """
-        y = ctx.output  ## next block backward 때 또는 마지막 레이어 끝나고 사람이 넣어줌
+        y = ctx.to_save[0]  ## next block backward 때 또는 마지막 레이어 끝나고 사람이 넣어줌
         F, G = ctx.F, ctx.G
 
         # obtaining gradients dX_1 and dX_2 from the concatenated input
@@ -122,7 +119,7 @@ class InvertibleCouplingLayer(Function):
         if hasattr(ctx, "prev_ctx"):
             X_1 = Y_1 - f_X_2
             x = torch.cat([X_1, X_2], dim=-1)
-            ctx.prev_ctx.output = x.detach()
+            ctx.prev_ctx.save_for_backward(x.detach().clone())
 
         return dx, None, None, None
 
@@ -225,7 +222,8 @@ class InvertibleVisionTransformer(nn.Module):
             x = layer(x)
 
         if hasattr(x, "ctx"):
-            x.ctx.output = x.detach().clone()
+            # x.ctx.output = x.detach().clone()
+            x.ctx.save_for_backward(x.detach().clone())
 
         # aggregate across sequence length
         x = x.mean(1)
@@ -290,7 +288,7 @@ class AttentionSubBlock(nn.Module):
         # Note that the complexity of the attention module is not a concern
         # since it is used blackbox as F block in the reversible logic and
         # can be arbitrary.
-        self.attn = MHA(dim, num_heads, batch_first=True)
+        self.attn = nn.MultiheadAttention(dim, num_heads, batch_first=True)
 
     def forward(self, x):
         # See MLP fwd pass for explanation.
@@ -385,7 +383,7 @@ def test():
 
 
 def test2():
-    input = torch.rand(1, 3, 32, 32, requires_grad=True) ## TODO: 왜 requires_grad=True 가 필요한지 모르겠다
+    input = torch.rand(1, 3, 32, 32, requires_grad=False)
     model = InvertibleVisionTransformer()
     model.zero_grad()
     output = model(input)
@@ -393,20 +391,15 @@ def test2():
     loss.backward()
     breakpoint()
 
-    state_dict = model.state_dict()
-
-
     # input.grad.zero_()
-    # model = RevViT()
-    # model.load_state_dict(state_dict)
-    # model.zero_grad()
-    # output = model(input)
-    # loss = output.norm()
-    # # computatin gradients with reversible backward logic
-    # # using retain_graph=True to keep the computation graph.
-    # loss.backward(retain_graph=True)
-    # breakpoint()
-
+    model.zero_grad()
+    for module in model.modules():
+        if isinstance(module, CouplingBlock):
+            module.use_invertible = False
+    output = model(input)
+    loss = output.norm()
+    loss.backward()
+    breakpoint()
 
 if __name__ == "__main__":
     # main()
