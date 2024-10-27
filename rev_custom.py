@@ -22,7 +22,7 @@ class coupling_block(Function):
 
     @staticmethod
     @torch.cuda.amp.custom_fwd
-    def forward(ctx, x: torch.Tensor, F: Callable, G: Callable, prev_ctx = None) -> Tuple[torch.Tensor, Any]:
+    def forward(ctx, x: torch.Tensor, F: Callable, G: Callable) -> Tuple[torch.Tensor, Any]:
         """
         Reversible Forward pass.
         Each reversible layer implements its own forward pass pass logic.
@@ -49,15 +49,16 @@ class coupling_block(Function):
         
         ctx.F = F
         ctx.G = G
-        ctx.prev_ctx = prev_ctx  # 이전 레이어한테 input 복원한거 보내줘야하므로 필요
+        ctx.prev_ctx = x.ctx if hasattr(x, "ctx") else None # 이전 레이어한테 input 복원한거 보내줘야하므로 필요
 
         output = torch.cat([Y_1, Y_2], dim=-1)
+        output.ctx = ctx
 
-        return output, ctx
+        return output
 
     @staticmethod
     @torch.cuda.amp.custom_bwd
-    def backward(ctx, dy: torch.Tensor, _: Any) -> torch.Tensor:
+    def backward(ctx, dy: torch.Tensor) -> torch.Tensor:
         """
         Reversible Backward pass.
         Each layer implements its own logic for backward pass (both
@@ -113,14 +114,14 @@ class coupling_block(Function):
         
         with torch.no_grad():
             dX_2 = dY_2 + X_2.grad
-            X_1 = Y_1 - f_X_2
 
         dx = torch.cat([dX_1, dX_2], dim=-1)
 
         ## 여기서 다음 backward pass 에 X_1, X_2 를 전달해줘야함
         if ctx.prev_ctx is not None:
+            X_1 = Y_1 - f_X_2
             x = torch.cat([X_1, X_2], dim=-1)
-            ctx.prev_ctx.output = x
+            ctx.prev_ctx.output = x.detach()
 
         return dx, None, None, None
 
@@ -138,16 +139,24 @@ class InvertibleBlock(nn.Module):
         super().__init__()
         self.F = F
         self.G = G
+        self.compute_inverse = compute_inverse
 
-    def forward(self, x, prev_ctx=None):
-        output, ctx = coupling_block.apply(x, self.F, self.G, prev_ctx)
-        ## prev_ctx 에 output 넣어주는걸 여기로 옮겨도 괜찮을듯
-        ## ctx 가 autograd 인터페이스 밖으로 나오는게 좋지않음.. 메모리 free 안될수도 있음.
-        ## 잘하면 output 에 backward hook 을 이용해서 ctx 를 숨길수도 있을듯 한데..
-        ## 아님 외부에 context manager 를 둬서 거기다가 ctx 를 숨기는 방법도 있을듯
-        ## with invertible_forward(enabled=True): 이런식으로
-        ## 근데 그럼 다음 레이어가 invertible 한지를 알아야함 (input 을 되돌려줄수있는지)
-        return output, ctx
+    def forward(self, x):
+        if self.compute_inverse:
+            output = coupling_block.apply(x, self.F, self.G)
+            ## prev_ctx 에 output 넣어주는걸 여기로 옮겨도 괜찮을듯
+            ## ctx 가 autograd 인터페이스 밖으로 나오는게 좋지않음.. 메모리 free 안될수도 있음.
+            ## 잘하면 output 에 backward hook 을 이용해서 ctx 를 숨길수도 있을듯 한데..
+            ## 아님 외부에 context manager 를 둬서 거기다가 ctx 를 숨기는 방법도 있을듯
+            ## with invertible_forward(enabled=True): 이런식으로
+            ## 근데 그럼 다음 레이어가 invertible 한지를 알아야함 (input 을 되돌려줄수있는지)
+            return output
+        else:
+            X_1, X_2 = torch.chunk(x, 2, dim=-1)
+            Y_1 = X_1 + self.F(X_2)
+            Y_2 = X_2 + self.G(Y_1)
+            output = torch.cat([Y_1, Y_2], dim=-1), None
+            return output, None
 
 
 class InvertibleTransformerBlock(InvertibleBlock):
@@ -214,10 +223,9 @@ class InvertibleVisionTransformer(nn.Module):
         # concatenated along the last dimension to pass into the reversible blocks
         x = torch.cat([x, x], dim=-1)
 
-        ctx = None
         for layer in self.layers:
-            x, ctx = layer(x, ctx)
-        ctx.output = x.detach()
+            x = layer(x)
+        x.ctx.output = x.detach()
 
         # aggregate across sequence length
         x = x.mean(1)
@@ -388,16 +396,16 @@ def test2():
     state_dict = model.state_dict()
 
 
-    input.grad.zero_()
-    model = RevViT()
-    model.load_state_dict(state_dict)
-    model.zero_grad()
-    output = model(input)
-    loss = output.norm()
-    # computatin gradients with reversible backward logic
-    # using retain_graph=True to keep the computation graph.
-    loss.backward(retain_graph=True)
-    breakpoint()
+    # input.grad.zero_()
+    # model = RevViT()
+    # model.load_state_dict(state_dict)
+    # model.zero_grad()
+    # output = model(input)
+    # loss = output.norm()
+    # # computatin gradients with reversible backward logic
+    # # using retain_graph=True to keep the computation graph.
+    # loss.backward(retain_graph=True)
+    # breakpoint()
 
 
 if __name__ == "__main__":
